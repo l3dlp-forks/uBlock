@@ -1,7 +1,7 @@
 /*******************************************************************************
 
-    µBlock - a browser extension to block requests.
-    Copyright (C) 2015 Raymond Hill
+    uBlock Origin - a browser extension to block requests.
+    Copyright (C) 2015-2017 Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,7 +19,9 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-/* global vAPI, HTMLDocument */
+/* global HTMLDocument */
+
+'use strict';
 
 /******************************************************************************/
 
@@ -29,8 +31,6 @@
 /******************************************************************************/
 
 (function() {
-
-'use strict';
 
 /******************************************************************************/
 
@@ -48,91 +48,75 @@ if ( typeof vAPI !== 'object' ) {
 
 /******************************************************************************/
 
-// Only if at least one subscribe link exists on the page.
-
-if (
-    document.querySelector('a[href^="abp:"],a[href^="https://subscribe.adblockplus.org/?"]') === null &&
-    window.location.href.startsWith('https://github.com/gorhill/uBlock/wiki/Filter-lists-from-around-the-web') === false
-) {
-    return;
-}
-
-/******************************************************************************/
-
-var messager = vAPI.messaging.channel('subscriber.js');
-
-/******************************************************************************/
-
-var onAbpLinkClicked = function(ev) {
+var onMaybeAbpLinkClicked = function(ev) {
     if ( ev.button !== 0 ) {
         return;
     }
+    // This addresses https://github.com/easylist/EasyListHebrew/issues/89
+    // Also, as per feedback to original fix:
+    // https://github.com/gorhill/uBlock/commit/99a3d9631047d33dc7a454296ab3dd0a1e91d6f1
     var target = ev.target;
-    var limit = 3;
-    var href = '';
-    do {
-        if ( target instanceof HTMLAnchorElement ) {
-            href = target.href;
-            break;
-        }
-        target = target.parentNode;
-    } while ( target && --limit );
+    if (
+        ev.isTrusted === false ||
+        target instanceof HTMLAnchorElement === false
+    ) {
+        return;
+    }
+    var href = target.href || '';
     if ( href === '' ) {
         return;
     }
-    var matches = /^abp:\/*subscribe\/*\?location=([^&]+).*title=([^&]+)/.exec(href);
+    var matches = /^(?:abp|ubo):\/*subscribe\/*\?location=([^&]+).*title=([^&]+)/.exec(href);
     if ( matches === null ) {
         matches = /^https?:\/\/.*?[&?]location=([^&]+).*?&title=([^&]+)/.exec(href);
-        if ( matches === null ) {
-            return;
-        }
+        if ( matches === null ) { return; }
     }
+
     var location = decodeURIComponent(matches[1]);
     var title = decodeURIComponent(matches[2]);
+    var messaging = vAPI.messaging;
 
     ev.stopPropagation();
     ev.preventDefault();
 
     var onListsSelectionDone = function() {
-        messager.send({ what: 'reloadAllFilters' });
-    };
-
-    var onExternalListsSaved = function() {
-        messager.send({
-            what: 'selectFilterLists',
-            switches: [ { location: location, off: false } ]
-        }, onListsSelectionDone);
+        messaging.send('scriptlets', { what: 'reloadAllFilters' });
     };
 
     var onSubscriberDataReady = function(details) {
         var confirmStr = details.confirmStr
                             .replace('{{url}}', location)
                             .replace('{{title}}', title);
-        if ( !window.confirm(confirmStr) ) {
-            return;
-        }
-
-        // List already subscribed to?
-        // https://github.com/chrisaljoudi/uBlock/issues/1033
-        // Split on line separators, not whitespaces.
-        var text = details.externalLists.trim();
-        var lines = text !== '' ? text.split(/\s*[\n\r]+\s*/) : [];
-        if ( lines.indexOf(location) !== -1 ) {
-            return;
-        }
-        lines.push(location, '');
-
-        messager.send({
-            what: 'userSettings',
-            name: 'externalLists',
-            value: lines.join('\n')
-        }, onExternalListsSaved);
+        if ( !window.confirm(confirmStr) ) { return; }
+        messaging.send(
+            'scriptlets',
+            {
+                what: 'applyFilterListSelection',
+                toImport: location
+            },
+            onListsSelectionDone
+        );
     };
 
-    messager.send({ what: 'subscriberData' }, onSubscriberDataReady);
+    messaging.send(
+        'scriptlets',
+        { what: 'subscriberData' },
+        onSubscriberDataReady
+    );
 };
 
-document.addEventListener('click', onAbpLinkClicked, true);
+/******************************************************************************/
+
+// Only if at least one subscribe link exists on the page.
+
+setTimeout(function() {
+    if (
+        document.querySelector('link[rel="canonical"][href="https://filterlists.com/"]') !== null ||
+        document.querySelector('a[href^="abp:"],a[href^="ubo:"],a[href^="https://subscribe.adblockplus.org/?"]') !== null
+    ) {
+        document.addEventListener('click', onMaybeAbpLinkClicked);
+    }
+}, 997);
 
 /******************************************************************************/
 

@@ -1,6 +1,17 @@
 body {
+    background-color: #fff;
+    box-sizing: border-box;
+    color: #000;
     margin: 0;
-    padding: 0 0.5em 0.5em 0.5em;
+    padding: 0;
+    }
+body > div.body {
+    padding: 0 0.5em;
+    }
+@media screen and (max-device-width: 960px) {
+    body {
+        zoom: 1.4;
+        }
     }
 h2, h3 {
     margin: 1em 0;
@@ -28,15 +39,18 @@ a.info.important {
 button {
     padding: 0.33em;
     }
-div > p:first-child {
-    margin-top: 0;
+input[type="number"] {
+    width: 5em;
     }
-div > p:last-child {
-    margin-bottom: 0;
+input[type="checkbox"][disabled] + label {
+    opacity: 0.4;
     }
-
 .para {
     width: 40em;
+    }
+.synopsis {
+    font-size: small;
+    opacity: 0.8;
     }
 .whatisthis {
     margin: 0 0 0 8px;
@@ -59,6 +73,7 @@ div > p:last-child {
     border: 1px dotted black;
     background-color: #F8F8F8;
     font-size: 13px;
+    white-space: pre-line;
     }
 .whatisthis-expandable > p {
     margin-top: 1em;
@@ -74,4 +89,19 @@ div > p:last-child {
     margin: 0;
     padding: 5px;
     background-color: #FEDAE0;
+    }
+@media (max-height: 640px), (max-height: 800px) and (max-width: 480px) {
+    .body > p,
+    .body > ul {
+        margin: 0.5em 0;
+        }
+    .vverbose {
+        display: none !important;
+        }
+    }
+@media (max-height: 400px) {
+    html {
+        min-height: 400px !important;
+        overflow: auto !important;
+        }
     }

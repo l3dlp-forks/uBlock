@@ -1,7 +1,7 @@
 /*******************************************************************************
 
     uBlock Origin - a browser extension to block requests.
-    Copyright (C) 2015 Raymond Hill
+    Copyright (C) 2015-2018 Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -20,11 +20,12 @@
 */
 
 /* global uDom */
-'use strict';
 
 /******************************************************************************/
 
 (function() {
+
+'use strict';
 
 /******************************************************************************/
 
@@ -48,20 +49,19 @@ if ( self.cloud.datakey === '' ) {
     return;
 }
 
-/******************************************************************************/
-
-var messager = vAPI.messaging.channel('cloud-ui.js');
+var messaging = vAPI.messaging;
 
 /******************************************************************************/
 
 var onCloudDataReceived = function(entry) {
-    if ( typeof entry !== 'object' || entry === null ) {
+    if ( entry instanceof Object === false ) {
         return;
     }
 
     self.cloud.data = entry.data;
 
     uDom.nodeFromId('cloudPull').removeAttribute('disabled');
+    uDom.nodeFromId('cloudPullAndMerge').removeAttribute('disabled');
 
     var timeOptions = {
         weekday: 'short',
@@ -75,7 +75,7 @@ var onCloudDataReceived = function(entry) {
     };
 
     var time = new Date(entry.tstamp);
-    widget.querySelector('span').textContent =
+    widget.querySelector('#cloudInfo').textContent =
         entry.source + '\n' +
         time.toLocaleString('fullwide', timeOptions);
 };
@@ -83,7 +83,8 @@ var onCloudDataReceived = function(entry) {
 /******************************************************************************/
 
 var fetchCloudData = function() {
-    messager.send(
+    messaging.send(
+        'cloudWidget',
         {
             what: 'cloudPull',
             datakey: self.cloud.datakey
@@ -98,21 +99,38 @@ var pushData = function() {
     if ( typeof self.cloud.onPush !== 'function' ) {
         return;
     }
-    messager.send(
+    messaging.send(
+        'cloudWidget',
         {
             what: 'cloudPush',
             datakey: self.cloud.datakey,
             data: self.cloud.onPush()
         },
-        fetchCloudData
+        function(error) {
+            var failed = typeof error === 'string';
+            document.getElementById('cloudPush')
+                    .classList
+                    .toggle('error', failed);
+            document.querySelector('#cloudError')
+                    .textContent = failed ? error : '';
+            fetchCloudData();
+        }
     );
 };
 
 /******************************************************************************/
 
-var pullData = function(ev) {
+var pullData = function() {
     if ( typeof self.cloud.onPull === 'function' ) {
-        self.cloud.onPull(self.cloud.data, ev.shiftKey);
+        self.cloud.onPull(self.cloud.data, false);
+    }
+};
+
+/******************************************************************************/
+
+var pullAndMergeData = function() {
+    if ( typeof self.cloud.onPull === 'function' ) {
+        self.cloud.onPull(self.cloud.data, true);
     }
 };
 
@@ -139,18 +157,22 @@ var closeOptions = function(ev) {
 
 var submitOptions = function() {
     var onOptions = function(options) {
-        if ( typeof options !== 'object' || options === null ) {
+        if ( options instanceof Object === false ) {
             return;
         }
         self.cloud.options = options;
     };
 
-    messager.send({
-        what: 'cloudSetOptions',
-        options: {
-            deviceName: uDom.nodeFromId('cloudDeviceName').value
-        }
-    }, onOptions);
+    messaging.send(
+        'cloudWidget',
+        {
+            what: 'cloudSetOptions',
+            options: {
+                deviceName: uDom.nodeFromId('cloudDeviceName').value
+            }
+        },
+        onOptions
+    );
     uDom.nodeFromId('cloudOptions').classList.remove('show');
 };
 
@@ -166,33 +188,39 @@ var onInitialize = function(options) {
     }
     self.cloud.options = options;
 
-    fetchCloudData();
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'cloud-ui.html', true);
+    xhr.overrideMimeType('text/html;charset=utf-8');
+    xhr.responseType = 'text';
+    xhr.onload = function() {
+        this.onload = null;
+        var parser = new DOMParser(),
+            parsed = parser.parseFromString(this.responseText, 'text/html'),
+            fromParent = parsed.body;
+        while ( fromParent.firstElementChild !== null ) {
+            widget.appendChild(
+                document.adoptNode(fromParent.firstElementChild)
+            );
+        }
 
-    var html = [
-        '<button id="cloudPush" type="button" title="cloudPush"></button>',
-        '<span data-i18n="cloudNoData"></span>',
-        '<button id="cloudPull" type="button" title="cloudPull" disabled></button>',
-        '<span id="cloudCog" class="fa">&#xf013;</span>',
-        '<div id="cloudOptions">',
-        '    <div>',
-        '        <p><label data-i18n="cloudDeviceNamePrompt"></label> <input id="cloudDeviceName" type="text" value="">',
-        '        <p><button id="cloudOptionsSubmit" type="button" data-i18n="genericSubmit"></button>',
-        '    </div>',
-        '</div>',
-    ].join('');
+        vAPI.i18n.render(widget);
+        widget.classList.remove('hide');
 
-    vAPI.insertHTML(widget, html);
-    vAPI.i18n.render(widget);
-    widget.classList.remove('hide');
-
-    uDom('#cloudPush').on('click', pushData);
-    uDom('#cloudPull').on('click', pullData);
-    uDom('#cloudCog').on('click', openOptions);
-    uDom('#cloudOptions').on('click', closeOptions);
-    uDom('#cloudOptionsSubmit').on('click', submitOptions);
+        uDom('#cloudPush').on('click', pushData);
+        uDom('#cloudPull').on('click', pullData);
+        uDom('#cloudPullAndMerge').on('click', pullAndMergeData);
+        uDom('#cloudCog').on('click', openOptions);
+        uDom('#cloudOptions').on('click', closeOptions);
+        uDom('#cloudOptionsSubmit').on('click', submitOptions);
+        
+        // Patch 2018-01-05: Must not assume this XHR will always be faster
+        // than messaging
+        fetchCloudData();
+    };
+    xhr.send();
 };
 
-messager.send({ what: 'cloudGetOptions' }, onInitialize);
+messaging.send('cloudWidget', { what: 'cloudGetOptions' }, onInitialize);
 
 /******************************************************************************/
 

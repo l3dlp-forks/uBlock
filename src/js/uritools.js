@@ -1,7 +1,7 @@
 /*******************************************************************************
 
-    µBlock - a browser extension to block requests.
-    Copyright (C) 2014 Raymond Hill
+    uBlock Origin - a browser extension to block requests.
+    Copyright (C) 2014-2018 Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,7 +19,9 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-/* global µBlock, publicSuffixList */
+/* global publicSuffixList */
+
+'use strict';
 
 /*******************************************************************************
 
@@ -33,9 +35,9 @@ Naming convention from https://en.wikipedia.org/wiki/URI_scheme#Examples
 
 µBlock.URI = (function() {
 
-'use strict';
-
 /******************************************************************************/
+
+var punycode = self.punycode;
 
 // Favorite regex tool: http://regex101.com/
 
@@ -49,7 +51,10 @@ var reRFC3986 = /^([^:\/?#]+:)?(\/\/[^\/?#]*)?([^?#]*)(\?[^#]*)?(#.*)?/;
 // Derived
 var reSchemeFromURI          = /^[^:\/?#]+:/;
 var reAuthorityFromURI       = /^(?:[^:\/?#]+:)?(\/\/[^\/?#]+)/;
+var reOriginFromURI          = /^(?:[^:\/?#]+:)\/\/(?:[^\/?#]+)?/;
 var reCommonHostnameFromURL  = /^https?:\/\/([0-9a-z_][0-9a-z._-]*[0-9a-z])\//;
+var rePathFromURI            = /^(?:[^:\/?#]+:)?(?:\/\/[^\/?#]*)?([^?#]*)/;
+var reMustNormalizeHostname  = /[^0-9a-z._-]/;
 
 // These are to parse authority field, not parsed by above official regex
 // IPv6 is seen as an exception: a non-compatible IPv6 is first tried, and
@@ -59,23 +64,16 @@ var reCommonHostnameFromURL  = /^https?:\/\/([0-9a-z_][0-9a-z._-]*[0-9a-z])\//;
 // https://github.com/gorhill/httpswitchboard/issues/211
 // "While a hostname may not contain other characters, such as the
 // "underscore character (_), other DNS names may contain the underscore"
-var reHostPortFromAuthority  = /^(?:[^@]*@)?([0-9a-z._-]*)(:\d*)?$/i;
+var reHostPortFromAuthority  = /^(?:[^@]*@)?([^:]*)(:\d*)?$/;
 var reIPv6PortFromAuthority  = /^(?:[^@]*@)?(\[[0-9a-f:]*\])(:\d*)?$/i;
 
 var reHostFromNakedAuthority = /^[0-9a-z._-]+[0-9a-z]$/i;
-var reHostFromAuthority      = /^(?:[^@]*@)?([0-9a-z._-]+)(?::\d*)?$/i;
+var reHostFromAuthority      = /^(?:[^@]*@)?([^:]+)(?::\d*)?$/;
 var reIPv6FromAuthority      = /^(?:[^@]*@)?(\[[0-9a-f:]+\])(?::\d*)?$/i;
 
 // Coarse (but fast) tests
 var reValidHostname          = /^([a-z\d]+(-*[a-z\d]+)*)(\.[a-z\d]+(-*[a-z\d])*)*$/;
 var reIPAddressNaive         = /^\d+\.\d+\.\d+\.\d+$|^\[[\da-zA-Z:]+\]$/;
-
-// Accurate tests
-// Source.: http://stackoverflow.com/questions/5284147/validating-ipv4-addresses-with-regexp/5284410#5284410
-//var reIPv4                   = /^((25[0-5]|2[0-4]\d|[01]?\d\d?)(\.|$)){4}/;
-
-// Source: http://forums.intermapper.com/viewtopic.php?p=1096#1096
-//var reIPv6                   = /^\s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}))|:)))(%.+)?\s*$/;
 
 /******************************************************************************/
 
@@ -226,6 +224,13 @@ URI.assemble = function(bits) {
 
 /******************************************************************************/
 
+URI.originFromURI = function(uri) {
+    var matches = reOriginFromURI.exec(uri);
+    return matches !== null ? matches[0].toLowerCase() : '';
+};
+
+/******************************************************************************/
+
 URI.schemeFromURI = function(uri) {
     var matches = reSchemeFromURI.exec(uri);
     if ( !matches ) {
@@ -248,41 +253,42 @@ URI.authorityFromURI = function(uri) {
 
 // The most used function, so it better be fast.
 
+// https://github.com/gorhill/uBlock/issues/1559
+//   See http://en.wikipedia.org/wiki/FQDN
+// https://bugzilla.mozilla.org/show_bug.cgi?id=1360285
+//   Revisit punycode dependency when above issue is fixed in Firefox.
+
 URI.hostnameFromURI = function(uri) {
     var matches = reCommonHostnameFromURL.exec(uri);
-    if ( matches ) {
-        return matches[1];
-    }
+    if ( matches !== null ) { return matches[1]; }
     matches = reAuthorityFromURI.exec(uri);
-    if ( !matches ) {
-        return '';
-    }
+    if ( matches === null ) { return ''; }
     var authority = matches[1].slice(2);
     // Assume very simple authority (most common case for µBlock)
     if ( reHostFromNakedAuthority.test(authority) ) {
         return authority.toLowerCase();
     }
     matches = reHostFromAuthority.exec(authority);
-    if ( !matches ) {
+    if ( matches === null ) {
         matches = reIPv6FromAuthority.exec(authority);
-        if ( !matches ) {
-            return '';
-        }
+        if ( matches === null ) { return ''; }
     }
-    // http://en.wikipedia.org/wiki/FQDN
     var hostname = matches[1];
-    if ( hostname.endsWith('.') ) {
+    while ( hostname.endsWith('.') ) {
         hostname = hostname.slice(0, -1);
     }
-    return hostname.toLowerCase();
+    if ( reMustNormalizeHostname.test(hostname) ) {
+        hostname = punycode.toASCII(hostname.toLowerCase());
+    }
+    return hostname;
 };
 
 /******************************************************************************/
 
 URI.domainFromHostname = function(hostname) {
     // Try to skip looking up the PSL database
-    if ( domainCache.hasOwnProperty(hostname) ) {
-        var entry = domainCache[hostname];
+    var entry = domainCache[hostname];
+    if ( entry !== undefined ) {
         entry.tstamp = Date.now();
         return entry.domain;
     }
@@ -291,6 +297,10 @@ URI.domainFromHostname = function(hostname) {
         return domainCacheAdd(hostname, psl.getDomain(hostname));
     }
     return domainCacheAdd(hostname, hostname);
+};
+
+URI.domainFromHostnameNoCache = function(hostname) {
+    return reIPAddressNaive.test(hostname) ? hostname : psl.getDomain(hostname);
 };
 
 URI.domain = function() {
@@ -303,10 +313,30 @@ var psl = publicSuffixList;
 
 /******************************************************************************/
 
+URI.entityFromDomain = function(domain) {
+    var pos = domain.indexOf('.');
+    return pos !== -1 ? domain.slice(0, pos) + '.*' : '';
+};
+
+/******************************************************************************/
+
+URI.pathFromURI = function(uri) {
+    var matches = rePathFromURI.exec(uri);
+    return matches !== null ? matches[1] : '';
+};
+
+/******************************************************************************/
+
 // Trying to alleviate the worries of looking up too often the domain name from
 // a hostname. With a cache, uBlock benefits given that it deals with a
 // specific set of hostnames within a narrow time span -- in other words, I
 // believe probability of cache hit are high in uBlock.
+
+var domainCache = new Map();
+var domainCacheCountLowWaterMark = 40;
+var domainCacheCountHighWaterMark = 60;
+var domainCacheEntryJunkyardMax =
+    domainCacheCountHighWaterMark - domainCacheCountLowWaterMark;
 
 var DomainCacheEntry = function(domain) {
     this.init(domain);
@@ -320,28 +350,26 @@ DomainCacheEntry.prototype.init = function(domain) {
 
 DomainCacheEntry.prototype.dispose = function() {
     this.domain = '';
-    if ( domainCacheEntryJunkyard.length < 25 ) {
+    if ( domainCacheEntryJunkyard.length < domainCacheEntryJunkyardMax ) {
         domainCacheEntryJunkyard.push(this);
     }
 };
 
 var domainCacheEntryFactory = function(domain) {
-    var entry = domainCacheEntryJunkyard.pop();
-    if ( entry ) {
-        return entry.init(domain);
-    }
-    return new DomainCacheEntry(domain);
+    return domainCacheEntryJunkyard.length !== 0 ?
+        domainCacheEntryJunkyard.pop().init(domain) :
+        new DomainCacheEntry(domain);
 };
 
 var domainCacheEntryJunkyard = [];
 
 var domainCacheAdd = function(hostname, domain) {
-    if ( domainCache.hasOwnProperty(hostname) ) {
-        domainCache[hostname].tstamp = Date.now();
+    var entry = domainCache.get(hostname);
+    if ( entry !== undefined ) {
+        entry.tstamp = Date.now();
     } else {
-        domainCache[hostname] = domainCacheEntryFactory(domain);
-        domainCacheCount += 1;
-        if ( domainCacheCount === domainCacheCountHighWaterMark ) {
+        domainCache.set(hostname, domainCacheEntryFactory(domain));
+        if ( domainCache.size === domainCacheCountHighWaterMark ) {
             domainCachePrune();
         }
     }
@@ -349,34 +377,24 @@ var domainCacheAdd = function(hostname, domain) {
 };
 
 var domainCacheEntrySort = function(a, b) {
-    return b.tstamp - a.tstamp;
+    return domainCache.get(b).tstamp - domainCache.get(a).tstamp;
 };
 
 var domainCachePrune = function() {
-    var hostnames = Object.keys(domainCache)
-                          .sort(domainCacheEntrySort)
-                          .slice(domainCacheCountLowWaterMark);
+    var hostnames = Array.from(domainCache.keys())
+                         .sort(domainCacheEntrySort)
+                         .slice(domainCacheCountLowWaterMark);
     var i = hostnames.length;
-    domainCacheCount -= i;
-    var hostname;
     while ( i-- ) {
-        hostname = hostnames[i];
-        domainCache[hostname].dispose();
-        delete domainCache[hostname];
+        var hostname = hostnames[i];
+        domainCache.get(hostname).dispose();
+        domainCache.delete(hostname);
     }
 };
 
-var domainCacheReset = function() {
-    domainCache = {};
-    domainCacheCount = 0;
-};
-
-var domainCache = {};
-var domainCacheCount = 0;
-var domainCacheCountLowWaterMark = 75;
-var domainCacheCountHighWaterMark = 100;
-
-psl.onChanged.addListener(domainCacheReset);
+window.addEventListener('publicSuffixList', function() {
+    domainCache.clear();
+});
 
 /******************************************************************************/
 
@@ -386,6 +404,22 @@ URI.domainFromURI = function(uri) {
     }
     return this.domainFromHostname(this.hostnameFromURI(uri));
 };
+
+/******************************************************************************/
+
+URI.isNetworkURI = function(uri) {
+    return reNetworkURI.test(uri);
+};
+
+var reNetworkURI = /^(?:ftps?|https?|wss?):\/\//;
+
+/******************************************************************************/
+
+URI.isNetworkScheme = function(scheme) {
+    return reNetworkScheme.test(scheme);
+};
+
+var reNetworkScheme = /^(?:ftps?|https?|wss?)$/;
 
 /******************************************************************************/
 

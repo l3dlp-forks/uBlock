@@ -1,7 +1,7 @@
 /*******************************************************************************
 
-    µBlock - a browser extension to block requests.
-    Copyright (C) 2014 Raymond Hill
+    uBlock Origin - a browser extension to block requests.
+    Copyright (C) 2014-2018 Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -22,6 +22,8 @@
 /* global DOMTokenList */
 /* exported uDom */
 
+'use strict';
+
 /******************************************************************************/
 
 // It's just a silly, minimalist DOM framework: this allows me to not rely
@@ -31,8 +33,6 @@
 // of assumption on passed parameters, etc. I grow it on a per-need-basis only.
 
 var uDom = (function() {
-
-'use strict';
 
 /******************************************************************************/
 
@@ -144,34 +144,6 @@ var nodeInNodeList = function(node, nodeList) {
 
 /******************************************************************************/
 
-var doesMatchSelector = function(node, selector) {
-    if ( !node ) {
-        return false;
-    }
-    if ( node.nodeType !== 1 ) {
-        return false;
-    }
-    if ( selector === undefined ) {
-        return true;
-    }
-    var parentNode = node.parentNode;
-    if ( !parentNode || !parentNode.setAttribute ) {
-        return false;
-    }
-    var doesMatch = false;
-    parentNode.setAttribute('uDom-32kXc6xEZA7o73AMB8vLbLct1RZOkeoO', '');
-    var grandpaNode = parentNode.parentNode || document;
-    var nl = grandpaNode.querySelectorAll('[uDom-32kXc6xEZA7o73AMB8vLbLct1RZOkeoO] > ' + selector);
-    var i = nl.length;
-    while ( doesMatch === false && i-- ) {
-        doesMatch = nl[i] === node;
-    }
-    parentNode.removeAttribute('uDom-32kXc6xEZA7o73AMB8vLbLct1RZOkeoO');
-    return doesMatch;
-};
-
-/******************************************************************************/
-
 DOMList.prototype.nodeAt = function(i) {
     return this.nodes[i] || null;
 };
@@ -230,12 +202,8 @@ DOMList.prototype.next = function(selector) {
         node = this.nodes[i];
         while ( node.nextSibling !== null ) {
             node = node.nextSibling;
-            if ( node.nodeType !== 1 ) {
-                continue;
-            }
-            if ( doesMatchSelector(node, selector) === false ) {
-                continue;
-            }
+            if ( node.nodeType !== 1 ) { continue; }
+            if ( node.matches(selector) === false ) { continue; }
             addNodeToList(r, node);
             break;
         }
@@ -260,7 +228,7 @@ DOMList.prototype.filter = function(filter) {
     var filterFunc;
     if ( typeof filter === 'string' ) {
         filterFunc = function() {
-            return doesMatchSelector(this, filter);
+            return this.matches(filter);
         };
     } else if ( typeof filter === 'function' ) {
         filterFunc = filter;
@@ -286,12 +254,13 @@ DOMList.prototype.filter = function(filter) {
 
 DOMList.prototype.ancestors = function(selector) {
     var r = new DOMList();
-    var n = this.nodes.length;
-    var node;
-    for ( var i = 0; i < n; i++ ) {
-        node = this.nodes[i].parentNode;
+    for ( var i = 0, n = this.nodes.length; i < n; i++ ) {
+        var node = this.nodes[i].parentNode;
         while ( node ) {
-            if ( doesMatchSelector(node, selector) ) {
+            if (
+                node instanceof Element &&
+                node.matches(selector)
+            ) {
                 addNodeToList(r, node);
             }
             node = node.parentNode;
@@ -499,6 +468,16 @@ DOMList.prototype.attr = function(attr, value) {
 
 /******************************************************************************/
 
+DOMList.prototype.removeAttr = function(attr) {
+    var i = this.nodes.length;
+    while ( i-- ) {
+        this.nodes[i].removeAttribute(attr);
+    }
+    return this;
+};
+
+/******************************************************************************/
+
 DOMList.prototype.prop = function(prop, value) {
     var i = this.nodes.length;
     if ( value === undefined ) {
@@ -533,19 +512,6 @@ DOMList.prototype.css = function(prop, value) {
 
 DOMList.prototype.val = function(value) {
     return this.prop('value', value);
-};
-
-/******************************************************************************/
-
-DOMList.prototype.html = function(html) {
-    var i = this.nodes.length;
-    if ( html === undefined ) {
-        return i ? this.nodes[0].innerHTML : '';
-    }
-    while ( i-- ) {
-        vAPI.insertHTML(this.nodes[i], html);
-    }
-    return this;
 };
 
 /******************************************************************************/

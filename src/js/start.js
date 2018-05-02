@@ -1,7 +1,7 @@
 /*******************************************************************************
 
-    uBlock - a browser extension to block requests.
-    Copyright (C) 2014-2015 Raymond Hill
+    uBlock Origin - a browser extension to block requests.
+    Copyright (C) 2014-2018 Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,17 +19,13 @@
     Home: https://github.com/gorhill/uBlock
 */
 
-/* global publicSuffixList, vAPI, µBlock */
+'use strict';
 
 /******************************************************************************/
 
 // Load all: executed once.
 
 µBlock.restart = (function() {
-
-'use strict';
-
-//quickProfiler.start('start.js');
 
 /******************************************************************************/
 
@@ -39,13 +35,28 @@ var µb = µBlock;
 
 vAPI.app.onShutdown = function() {
     µb.staticFilteringReverseLookup.shutdown();
-    µb.assetUpdater.shutdown();
+    µb.assets.updateStop();
     µb.staticNetFilteringEngine.reset();
+    µb.staticExtFilteringEngine.reset();
     µb.sessionFirewall.reset();
-    µb.permanentFirewall.reset();
     µb.permanentFirewall.reset();
     µb.sessionURLFiltering.reset();
     µb.permanentURLFiltering.reset();
+    µb.hnSwitches.reset();
+};
+
+/******************************************************************************/
+
+var processCallbackQueue = function(queue, callback) {
+    var processOne = function() {
+        var fn = queue.pop();
+        if ( fn ) {
+            fn(processOne);
+        } else if ( typeof callback === 'function' ) {
+            callback();
+        }
+    };
+    processOne();
 };
 
 /******************************************************************************/
@@ -57,25 +68,23 @@ vAPI.app.onShutdown = function() {
 var onAllReady = function() {
     // https://github.com/chrisaljoudi/uBlock/issues/184
     // Check for updates not too far in the future.
-    µb.assetUpdater.onStart.addEventListener(µb.updateStartHandler.bind(µb));
-    µb.assetUpdater.onCompleted.addEventListener(µb.updateCompleteHandler.bind(µb));
-    µb.assetUpdater.onAssetUpdated.addEventListener(µb.assetUpdatedHandler.bind(µb));
-    µb.assets.onAssetCacheRemoved.addEventListener(µb.assetCacheRemovedHandler.bind(µb));
+    µb.assets.addObserver(µb.assetObserver.bind(µb));
+    µb.scheduleAssetUpdater(µb.userSettings.autoUpdate ? 7 * 60 * 1000 : 0);
 
-    // Important: remove barrier to remote fetching, this was useful only
-    // for launch time.
-    µb.assets.remoteFetchBarrier -= 1;
+    // vAPI.cloud is optional.
+    if ( µb.cloudStorageSupported ) {
+        vAPI.cloud.start([
+            'tpFiltersPane',
+            'myFiltersPane',
+            'myRulesPane',
+            'whitelistPane'
+        ]);
+    }
 
-    vAPI.cloud.start([
-        'tpFiltersPane',
-        'myFiltersPane',
-        'myRulesPane',
-        'whitelistPane'
-    ]);
+    µb.contextMenu.update(null);
+    µb.firstInstall = false;
 
-    //quickProfiler.stop(0);
-
-    vAPI.onLoadAllCompleted();
+    processCallbackQueue(µb.onStartCompletedQueue);
 };
 
 /******************************************************************************/
@@ -84,7 +93,12 @@ var onAllReady = function() {
 // - PSL
 
 var onPSLReady = function() {
-    µb.loadFilterLists(onAllReady);
+    µb.selfieManager.load(function(valid) {
+        if ( valid === true ) {
+            return onAllReady();
+        }
+        µb.loadFilterLists(onAllReady);
+    });
 };
 
 /******************************************************************************/
@@ -92,48 +106,60 @@ var onPSLReady = function() {
 // To bring older versions up to date
 
 var onVersionReady = function(lastVersion) {
-    // Whitelist some key scopes by default
-    if ( lastVersion.localeCompare('0.8.6.0') < 0 ) {
-        µb.netWhitelist = µb.whitelistFromString(
-            µb.stringFromWhitelist(µb.netWhitelist) +
-            '\n' +
-            µb.netWhitelistDefault
-        );
-        µb.saveWhitelist();
-    }
-    // https://github.com/gorhill/uBlock/issues/135#issuecomment-96677379
-    // `about:loopconversation` is used by Firefox for its Hello service
-    if ( lastVersion.localeCompare('0.9.5.2') < 0 ) {
-        µb.netWhitelist = µb.whitelistFromString(
-            µb.stringFromWhitelist(µb.netWhitelist) +
-            '\n' +
-            'loopconversation.about-scheme'
-        );
-        µb.saveWhitelist();
-    }
-    if ( lastVersion !== vAPI.app.version ) {
-        vAPI.storage.set({ version: vAPI.app.version });
-    }
-};
+    if ( lastVersion === vAPI.app.version ) { return; }
 
-/******************************************************************************/
-
-var onSelfieReady = function(selfie) {
-    if ( selfie === null || selfie.magic !== µb.systemSettings.selfieMagic ) {
-        return false;
-    }
-    if ( publicSuffixList.fromSelfie(selfie.publicSuffixList) !== true ) {
-        return false;
-    }
-    if ( selfie.redirectEngine === undefined ) {
-        return false;
+    // Since AMO does not allow updating resources.txt, force a reload when a
+    // new version is detected, as resources.txt may have changed since last
+    // release. This will be done only for release versions of Firefox.
+    if (
+        vAPI.webextFlavor.soup.has('firefox') &&
+        /(b|rc)\d+$/.test(vAPI.app.version) === false
+    ) {
+        µb.redirectEngine.invalidateResourcesSelfie();
     }
 
-    µb.remoteBlacklists = selfie.filterLists;
-    µb.staticNetFilteringEngine.fromSelfie(selfie.staticNetFilteringEngine);
-    µb.redirectEngine.fromSelfie(selfie.redirectEngine);
-    µb.cosmeticFilteringEngine.fromSelfie(selfie.cosmeticFilteringEngine);
-    return true;
+    // From 1.15.19b9 and above, the `behind-the-scene` scope is no longer
+    // whitelisted by default, and network requests from that scope will be
+    // subject to filtering by default.
+    //
+    // Following code is to remove the `behind-the-scene` scope when updating
+    // from a version older than 1.15.19b9.
+    // This will apply only to webext versions of uBO, as the following would
+    // certainly cause too much breakage in Firefox legacy given that uBO can
+    // see ALL network requests.
+    // Remove when everybody is beyond 1.15.19b8.
+    (function patch1015019008(s) {
+        if ( vAPI.firefox !== undefined ) { return; }
+        var match = /^(\d+)\.(\d+)\.(\d+)(?:\D+(\d+))?/.exec(s);
+        if ( match === null ) { return; }
+        var v =
+            parseInt(match[1], 10) * 1000 * 1000 * 1000 +
+            parseInt(match[2], 10) * 1000 * 1000 +
+            parseInt(match[3], 10) * 1000 +
+            (match[4] ? parseInt(match[4], 10) : 0);
+        if ( /rc\d+$/.test(s) ) { v += 100; }
+        if ( v > 1015019008 ) { return; }
+        if ( µb.getNetFilteringSwitch('http://behind-the-scene/') ) { return; }
+        var fwRules = [
+            'behind-the-scene * * noop',
+            'behind-the-scene * image noop',
+            'behind-the-scene * 3p noop',
+            'behind-the-scene * inline-script noop',
+            'behind-the-scene * 1p-script noop',
+            'behind-the-scene * 3p-script noop',
+            'behind-the-scene * 3p-frame noop'
+        ].join('\n');
+        µb.sessionFirewall.fromString(fwRules, true);
+        µb.permanentFirewall.fromString(fwRules, true);
+        µb.savePermanentFirewallRules();
+        µb.hnSwitches.fromString([
+            'no-large-media: behind-the-scene false'
+        ].join('\n'), true);
+        µb.saveHostnameSwitches();
+        µb.toggleNetFilteringSwitch('http://behind-the-scene/', '', true);
+    })(lastVersion);
+
+    vAPI.storage.set({ version: vAPI.app.version });
 };
 
 /******************************************************************************/
@@ -157,22 +183,13 @@ var onUserSettingsReady = function(fetched) {
 
     fromFetch(userSettings, fetched);
 
-    // https://github.com/chrisaljoudi/uBlock/issues/426
-    // Important: block remote fetching for when loading assets at launch
-    // time.
-    µb.assets.autoUpdate = userSettings.autoUpdate;
-    µb.assets.autoUpdateDelay = µb.updateAssetsEvery;
-
-    // https://github.com/chrisaljoudi/uBlock/issues/540
-    // Disabling local mirroring for the time being
-    userSettings.experimentalEnabled = false;
-
-    µb.contextMenu.toggle(userSettings.contextMenuEnabled);
-    vAPI.browserSettings.set({
-        'hyperlinkAuditing': !userSettings.hyperlinkAuditingDisabled,
-        'prefetching': !userSettings.prefetchingDisabled,
-        'webrtcIPAddress': !userSettings.webrtcIPAddressHidden
-    });
+    if ( µb.privacySettingsSupported ) {
+        vAPI.browserSettings.set({
+            'hyperlinkAuditing': !userSettings.hyperlinkAuditingDisabled,
+            'prefetching': !userSettings.prefetchingDisabled,
+            'webrtcIPAddress': !userSettings.webrtcIPAddressHidden
+        });
+    }
 
     µb.permanentFirewall.fromString(fetched.dynamicFilteringString);
     µb.sessionFirewall.assign(µb.permanentFirewall);
@@ -180,9 +197,12 @@ var onUserSettingsReady = function(fetched) {
     µb.sessionURLFiltering.assign(µb.permanentURLFiltering);
     µb.hnSwitches.fromString(fetched.hostnameSwitchesString);
 
-    // Remove obsolete setting
-    delete userSettings.logRequests;
-    vAPI.storage.remove('logRequests');
+    // https://github.com/gorhill/uBlock/issues/1892
+    // For first installation on a battery-powered device, disable generic
+    // cosmetic filtering.
+    if ( µb.firstInstall && vAPI.webextFlavor.soup.has('mobile') ) {
+        userSettings.ignoreGenericCosmeticFilters = true;
+    }
 };
 
 /******************************************************************************/
@@ -192,7 +212,7 @@ var onUserSettingsReady = function(fetched) {
 var onSystemSettingsReady = function(fetched) {
     var mustSaveSystemSettings = false;
     if ( fetched.compiledMagic !== µb.systemSettings.compiledMagic ) {
-        µb.assets.purge(/^cache:\/\/compiled-/);
+        µb.assets.remove(/^compiled\//);
         mustSaveSystemSettings = true;
     }
     if ( fetched.selfieMagic !== µb.systemSettings.selfieMagic ) {
@@ -201,13 +221,16 @@ var onSystemSettingsReady = function(fetched) {
     if ( mustSaveSystemSettings ) {
         fetched.selfie = null;
         µb.selfieManager.destroy();
-        vAPI.storage.set(µb.systemSettings, µb.noopFunc);
+        vAPI.storage.set(µb.systemSettings);
     }
 };
 
 /******************************************************************************/
 
 var onFirstFetchReady = function(fetched) {
+    // https://github.com/gorhill/uBlock/issues/747
+    µb.firstInstall = fetched.version === '0.0.0.0';
+
     // Order is important -- do not change:
     onSystemSettingsReady(fetched);
     fromFetch(µb.localSettings, fetched);
@@ -216,13 +239,8 @@ var onFirstFetchReady = function(fetched) {
     onNetWhitelistReady(fetched.netWhitelist);
     onVersionReady(fetched.version);
 
-    // If we have a selfie, skip loading PSL, filters
-    if ( onSelfieReady(fetched.selfie) ) {
-        onAllReady();
-        return;
-    }
-
     µb.loadPublicSuffixList(onPSLReady);
+    µb.loadRedirectResources();
 };
 
 /******************************************************************************/
@@ -250,36 +268,57 @@ var fromFetch = function(to, fetched) {
 
 /******************************************************************************/
 
-return function() {
-
-    var onAdminSettingsRestored = function() {
-        // Forbid remote fetching of assets
-        µb.assets.remoteFetchBarrier += 1;
-
-        var fetchableProps = {
-            'compiledMagic': '',
-            'dynamicFilteringString': 'behind-the-scene * 3p noop\nbehind-the-scene * 3p-frame noop',
-            'urlFilteringString': '',
-            'hostnameSwitchesString': '',
-            'lastRestoreFile': '',
-            'lastRestoreTime': 0,
-            'lastBackupFile': '',
-            'lastBackupTime': 0,
-            'netWhitelist': '',
-            'selfie': null,
-            'selfieMagic': '',
-            'version': '0.0.0.0'
-        };
-
-        toFetch(µb.localSettings, fetchableProps);
-        toFetch(µb.userSettings, fetchableProps);
-        toFetch(µb.restoreBackupSettings, fetchableProps);
-
-        vAPI.storage.get(fetchableProps, onFirstFetchReady);
+var onSelectedFilterListsLoaded = function() {
+    var fetchableProps = {
+        'compiledMagic': '',
+        'dynamicFilteringString': [
+            'behind-the-scene * * noop',
+            'behind-the-scene * image noop',
+            'behind-the-scene * 3p noop',
+            'behind-the-scene * inline-script noop',
+            'behind-the-scene * 1p-script noop',
+            'behind-the-scene * 3p-script noop',
+            'behind-the-scene * 3p-frame noop'
+        ].join('\n'),
+        'urlFilteringString': '',
+        'hostnameSwitchesString': [
+            'no-large-media: behind-the-scene false'
+        ].join('\n'),
+        'lastRestoreFile': '',
+        'lastRestoreTime': 0,
+        'lastBackupFile': '',
+        'lastBackupTime': 0,
+        'netWhitelist': µb.netWhitelistDefault,
+        'selfieMagic': '',
+        'version': '0.0.0.0'
     };
 
-    // https://github.com/gorhill/uBlock/issues/531
-    µb.restoreAdminSettings(onAdminSettingsRestored);
+    toFetch(µb.localSettings, fetchableProps);
+    toFetch(µb.userSettings, fetchableProps);
+    toFetch(µb.restoreBackupSettings, fetchableProps);
+
+    vAPI.storage.get(fetchableProps, onFirstFetchReady);
+};
+
+/******************************************************************************/
+
+// TODO(seamless migration):
+// Eventually selected filter list keys will be loaded as a fetchable
+// property. Until then we need to handle backward and forward
+// compatibility, this means a special asynchronous call to load selected
+// filter lists.
+
+var onAdminSettingsRestored = function() {
+    µb.loadSelectedFilterLists(onSelectedFilterListsLoaded);
+};
+
+/******************************************************************************/
+
+return function() {
+    processCallbackQueue(µb.onBeforeStartQueue, function() {
+        // https://github.com/gorhill/uBlock/issues/531
+        µb.restoreAdminSettings(onAdminSettingsRestored);
+    });
 };
 
 /******************************************************************************/

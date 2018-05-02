@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <title></title>
 <link rel="stylesheet" href="css/common.css" type="text/css">
 <style>
@@ -125,7 +126,7 @@ body[dir="rtl"] #theURL > p > span {
 </style>
 </head>
 <body>
-<div id="warningSign"><span class="fa">&#xf071;</span></div>
+<a href="https://github.com/gorhill/uBlock/wiki/Strict-blocking" target="_blank"><div id="warningSign"><span class="fa">&#xf071;</span></div></a>
 <div>
     <p data-i18n="docblockedPrompt1"></p>
     <div id="theURL" class="collapsed">
@@ -153,7 +154,7 @@ body[dir="rtl"] #theURL > p > span {
 
 <div style="display: none;">
     <span id="proceedTemplate">
-        <span></span> 
+        <span></span>
         <span class="proceedChoice">
             <select>
                 <option class="hn" value="" selected>
@@ -165,6 +166,7 @@ body[dir="rtl"] #theURL > p > span {
     </span>
     </div>
 
+<script src="js/vapi.js"></script>
 <script src="js/vapi-common.js"></script>
 <script src="js/vapi-client.js"></script>
 <script src="js/udom.js"></script>

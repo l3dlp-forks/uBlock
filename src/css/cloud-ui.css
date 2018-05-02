@@ -2,50 +2,52 @@
     background: url("../img/cloud.png") hsl(216, 100%, 93%);
     border-radius: 3px;
     margin: 0.5em 0;
-    padding: 1em;
+    padding: 0.5em;
     position: relative;
     }
 #cloudWidget.hide {
     display: none;
     }
-#cloudWidget > button {
-    font-size: 160%;
-    padding: 0.1em 0.2em;
+#cloudWidget .cloudTools {
+    align-items: center;
+    display: flex;
+    flex-wrap: nowrap;
     }
-#cloudPull[disabled] {
+#cloudWidget button[disabled] {
     visibility: hidden;
     }
-#cloudPush:after ,
-#cloudPull:before {
-    font-family: FontAwesome;
-    font-style: normal;
-    font-weight: normal;
-    line-height: 1;
-    vertical-align: baseline;
-    display: inline-block;
+#cloudWidget button > span.fa {
+    font-size: 150%;
     }
-body[dir="ltr"] #cloudPush:after {
-    content: '\f0ee';
+#cloudWidget button.error {
+    color: red;
     }
-body[dir="rtl"] #cloudPush:after {
-    content: '\f0ee';
+#cloudPullAndMerge {
+    margin-left: 0.25em;
     }
-body[dir="ltr"] #cloudPull:before {
-    content: '\f0ed';
+#cloudPullAndMerge > span {
+    position: relative;
+}
+#cloudPullAndMerge > span > span {
+    font-size: 50%;
+    position: absolute;
     }
-body[dir="rtl"] #cloudPull:before {
-    content: '\f0ed';
-    }
-#cloudWidget > span {
+#cloudInfo {
     color: gray;
     display: inline-block;
     font-size: 90%;
     margin: 0 1em;
+    overflow: hidden;
     padding: 0;
-    vertical-align: bottom;
     white-space: pre;
     }
-#cloudWidget > .nodata {
+#cloudError {
+    color: red;
+    font-size: x-small;
+    margin: 0.5em 0 0 0;
+    }
+#cloudError:empty {
+    display: none;
     }
 #cloudWidget > #cloudCog {
     cursor: pointer;

@@ -1,17 +1,12 @@
-div > p:first-child {
-    margin-top: 0;
+html {
+    height: 100vh;
+    overflow: hidden;
     }
-div > p:last-child {
-    margin-bottom: 0;
+body {
+    overflow: hidden;
     }
 #whitelist {
-    box-sizing: border-box;
-    font-size: small;
-    height: 60vh;
-	text-align: left;
-    white-space: pre;
+    height: 75vh;
+    text-align: left;
     width: 100%;
-    }
-#whitelist.bad {
-    background-color: #fee;
     }
