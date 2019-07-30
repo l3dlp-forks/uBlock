@@ -1,7 +1,7 @@
 /*******************************************************************************
 
     uBlock Origin - a browser extension to block requests.
-    Copyright (C) 2015-2017 Raymond Hill
+    Copyright (C) 2015-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@
 
 /******************************************************************************/
 
-(function() {
+(( ) => {
 
 /******************************************************************************/
 
@@ -35,211 +35,267 @@ if (
     return;
 }
 
-var reHasCSSCombinators = /[ >+~]/,
-    reHasPseudoClass = /:+(?:after|before)$/,
-    sanitizedSelectors = new Map(),
-    matchProp = vAPI.matchesProp,
-    simple = { dict: new Set(), str: undefined },
-    complex = { dict: new Set(), str:  undefined },
-    procedural = { dict: new Map() },
-    jobQueue = [];
+const reHasCSSCombinators = /[ >+~]/;
+const simpleDeclarativeSet = new Set();
+let simpleDeclarativeStr;
+const complexDeclarativeSet = new Set();
+let complexDeclarativeStr;
+const declarativeStyleDict = new Map();
+let declarativeStyleStr;
+const proceduralDict = new Map();
+const exceptionDict = new Map();
+let exceptionStr;
+const nodesToProcess = new Set();
+const loggedSelectors = new Set();
 
-var DeclarativeSimpleJob = function(node) {
-    this.node = node;
+/******************************************************************************/
+
+const rePseudoElements = /::?(?:after|before)$/;
+
+const safeMatchSelector = function(selector, context) {
+    const safeSelector = rePseudoElements.test(selector)
+        ? selector.replace(rePseudoElements, '')
+        : selector;
+    return context.matches(safeSelector);
 };
-DeclarativeSimpleJob.create = function(node) {
-    return new DeclarativeSimpleJob(node);
+
+const safeQuerySelector = function(selector, context = document) {
+    const safeSelector = rePseudoElements.test(selector)
+        ? selector.replace(rePseudoElements, '')
+        : selector;
+    return context.querySelector(safeSelector);
 };
-DeclarativeSimpleJob.prototype.lookup = function(out) {
-    if ( simple.dict.size === 0 ) { return; }
-    if ( simple.str === undefined ) {
-        simple.str = Array.from(simple.dict).join(',\n');
+
+const safeGroupSelectors = function(selectors) {
+    const arr = Array.isArray(selectors)
+        ? selectors
+        : Array.from(selectors);
+    return arr.map(s => {
+        return rePseudoElements.test(s)
+            ? s.replace(rePseudoElements, '')
+            : s;
+    }).join(',\n');
+};
+
+/******************************************************************************/
+
+const processDeclarativeSimple = function(node, out) {
+    if ( simpleDeclarativeSet.size === 0 ) { return; }
+    if ( simpleDeclarativeStr === undefined ) {
+        simpleDeclarativeStr = safeGroupSelectors(simpleDeclarativeSet);
     }
     if (
-        (this.node === document || this.node[matchProp](simple.str) === false) &&
-        (this.node.querySelector(simple.str) === null)
+        (node === document || node.matches(simpleDeclarativeStr) === false) &&
+        (node.querySelector(simpleDeclarativeStr) === null)
     ) {
         return;
     }
-    for ( var selector of simple.dict ) {
+    for ( const selector of simpleDeclarativeSet ) {
         if (
-            this.node !== document && this.node[matchProp](selector) ||
-            this.node.querySelector(selector) !== null
+            (node === document || safeMatchSelector(selector, node) === false) &&
+            (safeQuerySelector(selector, node) === null)
         ) {
-            out.push(sanitizedSelectors.get(selector) || selector);
-            simple.dict.delete(selector);
-            simple.str = undefined;
-            if ( simple.dict.size === 0 ) { return; }
+            continue;
         }
+        out.push(`##${selector}`);
+        simpleDeclarativeSet.delete(selector);
+        simpleDeclarativeStr = undefined;
+        loggedSelectors.add(selector);
     }
 };
 
-var DeclarativeComplexJob = function() {
-};
-DeclarativeComplexJob.instance = null;
-DeclarativeComplexJob.create = function() {
-    if ( DeclarativeComplexJob.instance === null ) {
-        DeclarativeComplexJob.instance = new DeclarativeComplexJob();
+/******************************************************************************/
+
+const processDeclarativeComplex = function(out) {
+    if ( complexDeclarativeSet.size === 0 ) { return; }
+    if ( complexDeclarativeStr === undefined ) {
+        complexDeclarativeStr = safeGroupSelectors(complexDeclarativeSet);
     }
-    return DeclarativeComplexJob.instance;
-};
-DeclarativeComplexJob.prototype.lookup = function(out) {
-    if ( complex.dict.size === 0 ) { return; }
-    if ( complex.str === undefined ) {
-        complex.str = Array.from(complex.dict).join(',\n');
-    }
-    if ( document.querySelector(complex.str) === null ) { return; }
-    for ( var selector of complex.dict ) {
-        if ( document.querySelector(selector) !== null ) {
-            out.push(sanitizedSelectors.get(selector) || selector);
-            complex.dict.delete(selector);
-            complex.str = undefined;
-            if ( complex.dict.size === 0 ) { return; }
-        }
+    if ( document.querySelector(complexDeclarativeStr) === null ) { return; }
+    for ( const selector of complexDeclarativeSet ) {
+        if ( safeQuerySelector(selector) === null ) { continue; }
+        out.push(`##${selector}`);
+        complexDeclarativeSet.delete(selector);
+        complexDeclarativeStr = undefined;
+        loggedSelectors.add(selector);
     }
 };
 
-var ProceduralJob = function() {
-};
-ProceduralJob.instance = null;
-ProceduralJob.create = function() {
-    if ( ProceduralJob.instance === null ) {
-        ProceduralJob.instance = new ProceduralJob();
+/******************************************************************************/
+
+const processDeclarativeStyle = function(out) {
+    if ( declarativeStyleDict.size === 0 ) { return; }
+    if ( declarativeStyleStr === undefined ) {
+        declarativeStyleStr = safeGroupSelectors(declarativeStyleDict.keys());
     }
-    return ProceduralJob.instance;
-};
-ProceduralJob.prototype.lookup = function(out) {
-    for ( var entry of procedural.dict ) {
-        if ( entry[1].test() ) {
-            procedural.dict.delete(entry[0]);
-            out.push(entry[1].raw);
-            if ( procedural.dict.size === 0 ) { return; }
-        }
+    if ( document.querySelector(declarativeStyleStr) === null ) { return; }
+    for ( const [ selector, style ] of declarativeStyleDict ) {
+        if ( safeQuerySelector(selector) === null ) { continue; }
+        const raw = `##${selector}:style(${style})`;
+        out.push(raw);
+        declarativeStyleDict.delete(selector);
+        declarativeStyleStr = undefined;
+        loggedSelectors.add(raw);
     }
 };
 
-var jobQueueTimer = new vAPI.SafeAnimationFrame(function processJobQueue() {
+/******************************************************************************/
+
+const processProcedural = function(out) {
+    if ( proceduralDict.size === 0 ) { return; }
+    for ( const entry of proceduralDict ) {
+        if ( entry[1].test() === false ) { continue; }
+        out.push(`##${entry[1].raw}`);
+        proceduralDict.delete(entry[0]);
+    }
+};
+
+/******************************************************************************/
+
+const processExceptions = function(out) {
+    if ( exceptionDict.size === 0 ) { return; }
+    if ( exceptionStr === undefined ) {
+        exceptionStr = safeGroupSelectors(exceptionDict.keys());
+    }
+    if ( document.querySelector(exceptionStr) === null ) { return; }
+    for ( const [ selector, raw ] of exceptionDict ) {
+        if ( safeQuerySelector(selector) === null ) { continue; }
+        out.push(`#@#${raw}`);
+        exceptionDict.delete(selector);
+        exceptionStr = undefined;
+        loggedSelectors.add(raw);
+    }
+};
+
+/******************************************************************************/
+
+const processTimer = new vAPI.SafeAnimationFrame(( ) => {
     //console.time('dom logger/scanning for matches');
-    jobQueueTimer.clear();
-    var toLog = [],
-        t0 = Date.now(),
-        job;
-    while ( (job = jobQueue.shift()) ) {
-        job.lookup(toLog);
-        if ( (Date.now() - t0) > 10 ) { break; }
+    processTimer.clear();
+    if ( nodesToProcess.size === 0 ) { return; }
+
+    if ( nodesToProcess.size !== 1 && nodesToProcess.has(document) ) {
+        nodesToProcess.clear();
+        nodesToProcess.add(document);
     }
-    if ( toLog.length !== 0 ) {
-        vAPI.messaging.send(
-            'scriptlets',
-            {
-                what: 'logCosmeticFilteringData',
-                frameURL: window.location.href,
-                frameHostname: window.location.hostname,
-                matchedSelectors: toLog
-            }
-        );
+
+    const toLog = [];
+    if ( simpleDeclarativeSet.size !== 0 ) {
+        for ( const node of nodesToProcess ) {
+            processDeclarativeSimple(node, toLog);
+        }
     }
-    if ( simple.dict.size === 0 && complex.dict.size === 0 ) {
-        jobQueue = [];
-    }
-    if ( jobQueue.length !== 0 ) {
-        jobQueueTimer.start(100);
-    }
+
+    processDeclarativeComplex(toLog);
+    processDeclarativeStyle(toLog);
+    processProcedural(toLog);
+    processExceptions(toLog);
+
+    nodesToProcess.clear();
+
+    if ( toLog.length === 0 ) { return; }
+
+    vAPI.messaging.send(
+        'scriptlets',
+        {
+            what: 'logCosmeticFilteringData',
+            frameURL: window.location.href,
+            frameHostname: window.location.hostname,
+            matchedSelectors: toLog,
+        }
+    );
     //console.timeEnd('dom logger/scanning for matches');
 });
 
-var handlers = {
+/******************************************************************************/
+
+const attributeObserver = new MutationObserver(mutations => {
+    if ( nodesToProcess.has(document) ) { return; }
+    for ( const mutation of mutations ) {
+        const node = mutation.target;
+        if ( node.nodeType !== 1 ) { continue; }
+        nodesToProcess.add(node);
+    }
+    if ( nodesToProcess.size !== 0 ) {
+        processTimer.start(100);
+    }
+});
+
+/******************************************************************************/
+
+const handlers = {
     onFiltersetChanged: function(changes) {
         //console.time('dom logger/filterset changed');
-        var selector, sanitized, entry,
-            simpleSizeBefore = simple.dict.size,
-            complexSizeBefore = complex.dict.size,
-            logNow = [];
-        for ( entry of (changes.declarative || []) ) {
-            for ( selector of entry[0].split(',\n') ) {
-                if ( entry[1] === 'display:none!important;' ) {
-                    if ( reHasPseudoClass.test(selector) ) {
-                        sanitized = selector.replace(reHasPseudoClass, '');
-                        sanitizedSelectors.set(sanitized, selector);
-                        selector = sanitized;
-                    }
-                    if ( reHasCSSCombinators.test(selector) ) {
-                        complex.dict.add(selector);
-                        complex.str = undefined;
-                    } else {
-                        simple.dict.add(selector);
-                        simple.str = undefined;
-                    }
+        for ( const entry of (changes.declarative || []) ) {
+            for ( let selector of entry[0].split(',\n') ) {
+                if ( entry[1] !== 'display:none!important;' ) {
+                    declarativeStyleDict.set(selector, entry[1]);
+                    declarativeStyleStr = undefined;
+                    continue;
+                }
+                if ( loggedSelectors.has(selector) ) { continue; }
+                if ( reHasCSSCombinators.test(selector) ) {
+                    complexDeclarativeSet.add(selector);
+                    complexDeclarativeStr = undefined;
                 } else {
-                    logNow.push(selector + ':style(' + entry[1] + ')');
+                    simpleDeclarativeSet.add(selector);
+                    simpleDeclarativeStr = undefined;
                 }
             }
         }
-        if ( simple.dict.size !== simpleSizeBefore ) {
-            jobQueue.push(DeclarativeSimpleJob.create(document));
+        if (
+            Array.isArray(changes.procedural) &&
+            changes.procedural.length !== 0
+        ) {
+            for ( const selector of changes.procedural ) {
+                proceduralDict.set(selector.raw, selector);
+            }
         }
-        if ( complex.dict.size !== complexSizeBefore ) {
-            complex.str = Array.from(complex.dict).join(',\n');
-            jobQueue.push(DeclarativeComplexJob.create());
-        }
-        if ( logNow.length !== 0 ) {
-            vAPI.messaging.send(
-                'scriptlets',
-                {
-                    what: 'logCosmeticFilteringData',
-                    frameURL: window.location.href,
-                    frameHostname: window.location.hostname,
-                    matchedSelectors: logNow
+        if ( Array.isArray(changes.exceptions) ) {
+            for ( const selector of changes.exceptions ) {
+                if ( loggedSelectors.has(selector) ) { continue; }
+                if ( selector.charCodeAt(0) === 0x7B /* '{' */ ) {
+                    const details = JSON.parse(selector);
+                    exceptionDict.set(details.style[0], details.raw);
+                } else {
+                    exceptionDict.set(selector, selector);
                 }
-            );
-        }
-        if ( Array.isArray(changes.procedural) ) {
-            for ( selector of changes.procedural ) {
-                procedural.dict.set(selector.raw, selector);
             }
-            if ( changes.procedural.length !== 0 ) {
-                jobQueue.push(ProceduralJob.create());
-            }
+            exceptionStr = undefined;
         }
-        if ( jobQueue.length !== 0 ) {
-            jobQueueTimer.start(1);
-        }
+        nodesToProcess.clear();
+        nodesToProcess.add(document);
+        processTimer.start(1);
         //console.timeEnd('dom logger/filterset changed');
     },
 
     onDOMCreated: function() {
         handlers.onFiltersetChanged(vAPI.domFilterer.getAllSelectors());
         vAPI.domFilterer.addListener(handlers);
+        attributeObserver.observe(document.body, {
+            attributes: true,
+            subtree: true
+        });
     },
 
     onDOMChanged: function(addedNodes) {
-        if ( simple.dict.size === 0 && complex.dict.size === 0 ) { return; }
-        // This is to guard against runaway job queue. I suspect this could
-        // occur on slower devices.
-        if ( jobQueue.length <= 300 ) {
-            if ( simple.dict.size !== 0 ) {
-                for ( var node of addedNodes ) {
-                    jobQueue.push(DeclarativeSimpleJob.create(node));
-                }
-            }
-            if ( complex.dict.size !== 0 ) {
-                jobQueue.push(DeclarativeComplexJob.create());
-            }
-            if ( procedural.dict.size !== 0 ) {
-                jobQueue.push(ProceduralJob.create());
-            }
+        if ( nodesToProcess.has(document) ) { return; }
+        for ( const node of addedNodes ) {
+            if ( node.parentNode === null ) { continue; }
+            nodesToProcess.add(node);
         }
-        if ( jobQueue.length !== 0 ) {
-            jobQueueTimer.start(100);
+        if ( nodesToProcess.size !== 0 ) {
+            processTimer.start(100);
         }
     }
 };
 
 /******************************************************************************/
 
-var onMessage = function(msg) {
+const onMessage = function(msg) {
     if ( msg.what === 'loggerDisabled' ) {
-        jobQueueTimer.clear();
+        processTimer.clear();
+        attributeObserver.disconnect();
         vAPI.domFilterer.removeListener(handlers);
         vAPI.domWatcher.removeListener(handlers);
         vAPI.messaging.removeChannelListener('domLogger', onMessage);
@@ -252,3 +308,24 @@ vAPI.domWatcher.addListener(handlers);
 /******************************************************************************/
 
 })();
+
+
+
+
+
+
+
+
+/*******************************************************************************
+
+    DO NOT:
+    - Remove the following code
+    - Add code beyond the following code
+    Reason:
+    - https://github.com/gorhill/uBlock/pull/3721
+    - uBO never uses the return value from injected content scripts
+
+**/
+
+void 0;
+

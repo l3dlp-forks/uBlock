@@ -1,7 +1,7 @@
 /*******************************************************************************
 
     uBlock Origin - a browser extension to block requests.
-    Copyright (C) 2017-2018 Raymond Hill
+    Copyright (C) 2017-present Raymond Hill
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -51,27 +51,26 @@
 **/
 
 µBlock.staticExtFilteringEngine = (function() {
-    var µb = µBlock,
-        reHostnameSeparator = /\s*,\s*/,
-        reHasUnicode = /[^\x00-\x7F]/,
-        reParseRegexLiteral = /^\/(.+)\/([im]+)?$/,
-        emptyArray = [],
-        parsed = {
-            hostnames: [],
-            exception: false,
-            suffix: ''
-        };
+    const µb = µBlock;
+    const reHasUnicode = /[^\x00-\x7F]/;
+    const reParseRegexLiteral = /^\/(.+)\/([imu]+)?$/;
+    const emptyArray = [];
+    const parsed = {
+        hostnames: [],
+        exception: false,
+        suffix: ''
+    };
 
     // To be called to ensure no big parent string of a string slice is
     // left into memory after parsing filter lists is over.
-    var resetParsed = function() {
+    const resetParsed = function() {
         parsed.hostnames = [];
         parsed.suffix = '';
     };
 
-    var isValidCSSSelector = (function() {
-        var div = document.createElement('div'),
-            matchesFn;
+    const isValidCSSSelector = (( ) => {
+        const div = document.createElement('div');
+        let matchesFn;
         // Keep in mind:
         //   https://github.com/gorhill/uBlock/issues/693
         //   https://github.com/gorhill/uBlock/issues/1955
@@ -96,11 +95,11 @@
         }
         // Quick regex-based validation -- most cosmetic filters are of the
         // simple form and in such case a regex is much faster.
-        var reSimple = /^[#.][\w-]+$/;
-        return function(s) {
+        const reSimple = /^[#.][\w-]+$/;
+        return s => {
             if ( reSimple.test(s) ) { return true; }
             try {
-                matchesFn(s + ', ' + s + ':not(#foo)');
+                matchesFn(`${s}, ${s}:not(#foo)`);
             } catch (ex) {
                 return false;
             }
@@ -109,7 +108,7 @@
     })();
 
 
-    var isBadRegex = function(s) {
+    const isBadRegex = function(s) {
         try {
             void new RegExp(s);
         } catch (ex) {
@@ -119,24 +118,42 @@
         return false;
     };
 
-    var translateAdguardCSSInjectionFilter = function(suffix) {
-        var matches = /^([^{]+)\{([^}]+)\}$/.exec(suffix);
+    const translateAdguardCSSInjectionFilter = function(suffix) {
+        const matches = /^([^{]+)\{([^}]+)\}$/.exec(suffix);
         if ( matches === null ) { return ''; }
-        return matches[1].trim() + ':style(' +  matches[2].trim() + ')';
+        const selector = matches[1].trim();
+        const style = matches[2].trim();
+        // For some reasons, many of Adguard's plain cosmetic filters are
+        // "disguised" as style-based cosmetic filters: convert such filters
+        // to plain cosmetic filters.
+        return /display\s*:\s*none\s*!important;?$/.test(style)
+            ? selector
+            : selector + ':style(' +  style + ')';
     };
 
-    var toASCIIHostnames = function(hostnames) {
-        var i = hostnames.length;
-        while ( i-- ) {
-            var hostname = hostnames[i];
-            hostnames[i] = hostname.charCodeAt(0) === 0x7E /* '~' */ ?
-                '~' + punycode.toASCII(hostname.slice(1)) :
-                punycode.toASCII(hostname);
+    const hostnamesFromPrefix = function(s) {
+        const hostnames = [];
+        const hasUnicode = reHasUnicode.test(s);
+        let beg = 0;
+        while ( beg < s.length ) {
+            let end = s.indexOf(',', beg);
+            if ( end === -1 ) { end = s.length; }
+            let hostname = s.slice(beg, end).trim();
+            if ( hostname.length !== 0 ) {
+                if ( hasUnicode ) {
+                    hostname = hostname.charCodeAt(0) === 0x7E /* '~' */
+                        ? '~' + punycode.toASCII(hostname.slice(1))
+                        : punycode.toASCII(hostname);
+                }
+                hostnames.push(hostname);
+            }
+            beg = end + 1;
         }
+        return hostnames;
     };
 
-    var compileProceduralSelector = (function() {
-        var reProceduralOperator = new RegExp([
+    const compileProceduralSelector = (( ) => {
+        const reProceduralOperator = new RegExp([
             '^(?:',
                 [
                 '-abp-contains',
@@ -149,22 +166,31 @@
                 'matches-css',
                 'matches-css-after',
                 'matches-css-before',
+                'min-text-length',
+                'not',
+                'nth-ancestor',
+                'watch-attr',
+                'watch-attrs',
                 'xpath'
                 ].join('|'),
             ')\\('
         ].join(''));
 
-        var reEscapeRegex = /[.*+?^${}()|[\]\\]/g,
-            reNeedScope = /^\s*[+>~]/,
-            reIsDanglingSelector = /(?:[+>~]\s*|\s+)$/;
+        const reEatBackslashes = /\\([()])/g;
+        const reEscapeRegex = /[.*+?^${}()|[\]\\]/g;
+        const reNeedScope = /^\s*>/;
+        const reIsDanglingSelector = /[+>~\s]\s*$/;
+        const reIsSiblingSelector = /^\s*[+~]/;
 
-        var lastProceduralSelector = '',
-            lastProceduralSelectorCompiled,
-            regexToRawValue = new Map();
+        const regexToRawValue = new Map();
+        let lastProceduralSelector = '',
+            lastProceduralSelectorCompiled;
 
-        var compileText = function(s) {
-            var regexDetails,
-                match = reParseRegexLiteral.exec(s);
+        // When dealing with literal text, we must first eat _some_
+        // backslash characters.
+        const compileText = function(s) {
+            const match = reParseRegexLiteral.exec(s);
+            let regexDetails;
             if ( match !== null ) {
                 regexDetails = match[1];
                 if ( isBadRegex(regexDetails) ) { return; }
@@ -172,19 +198,20 @@
                     regexDetails = [ regexDetails, match[2] ];
                 }
             } else {
-                regexDetails = s.replace(reEscapeRegex, '\\$&');
+                regexDetails = s.replace(reEatBackslashes, '$1')
+                                .replace(reEscapeRegex, '\\$&');
                 regexToRawValue.set(regexDetails, s);
             }
             return regexDetails;
         };
 
-        var compileCSSDeclaration = function(s) {
-            var name, value, regexDetails,
-                pos = s.indexOf(':');
+        const compileCSSDeclaration = function(s) {
+            const pos = s.indexOf(':');
             if ( pos === -1 ) { return; }
-            name = s.slice(0, pos).trim();
-            value = s.slice(pos + 1).trim();
-            var match = reParseRegexLiteral.exec(value);
+            const name = s.slice(0, pos).trim();
+            const value = s.slice(pos + 1).trim();
+            const match = reParseRegexLiteral.exec(value);
+            let regexDetails;
             if ( match !== null ) {
                 regexDetails = match[1];
                 if ( isBadRegex(regexDetails) ) { return; }
@@ -198,16 +225,55 @@
             return { name: name, value: regexDetails };
         };
 
-        var compileConditionalSelector = function(s) {
+        const compileConditionalSelector = function(s) {
             // https://github.com/AdguardTeam/ExtendedCss/issues/31#issuecomment-302391277
-            // Prepend `:scope ` if needed.
+            //   Prepend `:scope ` if needed.
             if ( reNeedScope.test(s) ) {
-                s = ':scope ' + s;
+                s = `:scope ${s}`;
             }
             return compile(s);
         };
 
-        var compileXpathExpression = function(s) {
+        const compileInteger = function(s, min = 0, max = 0x7FFFFFFF) {
+            if ( /^\d+$/.test(s) === false ) { return; }
+            const n = parseInt(s, 10);
+            if ( n >= min && n < max ) {
+                return n;
+            }
+        };
+
+        const compileNotSelector = function(s) {
+            // https://github.com/uBlockOrigin/uBlock-issues/issues/341#issuecomment-447603588
+            //   Reject instances of :not() filters for which the argument is
+            //   a valid CSS selector, otherwise we would be adversely
+            //   changing the behavior of CSS4's :not().
+            if ( isValidCSSSelector(s) === false ) {
+                return compileConditionalSelector(s);
+            }
+        };
+
+        const compileNthAncestorSelector = function(s) {
+            return compileInteger(s, 1, 256);
+        };
+
+        const compileSpathExpression = function(s) {
+            if ( isValidCSSSelector('*' + s) ) {
+                return s;
+            }
+        };
+
+        const compileAttrList = function(s) {
+            const attrs = s.split('\s*,\s*');
+            const out = [];
+            for ( const attr of attrs ) {
+                if ( attr !== '' ) {
+                    out.push(attr);
+                }
+            }
+            return out;
+        };
+
+        const compileXpathExpression = function(s) {
             try {
                 document.createExpression(s, null);
             } catch (e) {
@@ -217,13 +283,14 @@
         };
 
         // https://github.com/gorhill/uBlock/issues/2793
-        var normalizedOperators = new Map([
+        const normalizedOperators = new Map([
             [ ':-abp-contains', ':has-text' ],
-            [ ':-abp-has', ':if' ],
-            [ ':contains', ':has-text' ]
+            [ ':-abp-has', ':has' ],
+            [ ':contains', ':has-text' ],
+            [ ':watch-attrs', ':watch-attr' ],
         ]);
 
-        var compileArgument = new Map([
+        const compileArgument = new Map([
             [ ':has', compileConditionalSelector ],
             [ ':has-text', compileText ],
             [ ':if', compileConditionalSelector ],
@@ -231,6 +298,11 @@
             [ ':matches-css', compileCSSDeclaration ],
             [ ':matches-css-after', compileCSSDeclaration ],
             [ ':matches-css-before', compileCSSDeclaration ],
+            [ ':min-text-length', compileInteger ],
+            [ ':not', compileNotSelector ],
+            [ ':nth-ancestor', compileNthAncestorSelector ],
+            [ ':spath', compileSpathExpression ],
+            [ ':watch-attr', compileAttrList ],
             [ ':xpath', compileXpathExpression ]
         ]);
 
@@ -241,61 +313,70 @@
         //   to other blockers.
         //   The normalized string version is what is reported in the logger,
         //   by design.
-        var decompile = function(compiled) {
-            var tasks = compiled.tasks;
+        const decompile = function(compiled) {
+            const tasks = compiled.tasks;
             if ( Array.isArray(tasks) === false ) {
                 return compiled.selector;
             }
-            var raw = [ compiled.selector ],
-                value;                
-            for ( var i = 0, n = tasks.length, task; i < n; i++ ) {
-                task = tasks[i];
+            const raw = [ compiled.selector ];
+            let value;
+            for ( const task of tasks ) {
                 switch ( task[0] ) {
-                case ':xpath':
-                    raw.push(task[0], '(', task[1], ')');
+                case ':has':
+                case ':if':
+                    raw.push(`:has(${decompile(task[1])})`);
                     break;
                 case ':has-text':
                     if ( Array.isArray(task[1]) ) {
-                        value = '/' + task[1][0] + '/' + task[1][1];
+                        value = `/${task[1][0]}/${task[1][1]}`;
                     } else {
                         value = regexToRawValue.get(task[1]);
                         if ( value === undefined ) {
-                            value = '/' + task[1] + '/';
+                            value = `/${task[1]}/`;
                         }
                     }
-                    raw.push(task[0], '(', value, ')');
+                    raw.push(`:has-text(${value})`);
                     break;
                 case ':matches-css':
                 case ':matches-css-after':
                 case ':matches-css-before':
                     if ( Array.isArray(task[1].value) ) {
-                        value = '/' + task[1].value[0] + '/' + task[1].value[1];
+                        value = `/${task[1].value[0]}/${task[1].value[1]}`;
                     } else {
                         value = regexToRawValue.get(task[1].value);
                         if ( value === undefined ) {
-                            value = '/' + task[1].value + '/';
+                            value = `/${task[1].value}/`;
                         }
                     }
-                    raw.push(task[0], '(', task[1].name, ': ', value, ')');
+                    raw.push(`${task[0]}(${task[1].name}: ${value})`);
                     break;
-                case ':has':
-                case ':if':
+                case ':not':
                 case ':if-not':
-                    raw.push(task[0], '(', decompile(task[1]), ')');
+                    raw.push(`:not(${decompile(task[1])})`);
+                    break;
+                case ':spath':
+                    raw.push(task[1]);
+                    break;
+                case ':min-text-length':
+                case ':nth-ancestor':
+                case ':watch-attr':
+                case ':xpath':
+                    raw.push(`${task[0]}(${task[1]})`);
                     break;
                 }
             }
             return raw.join('');
         };
 
-        var compile = function(raw) {
+        const compile = function(raw, root = false) {
             if ( raw === '' ) { return; }
-            var prefix = '',
+            let prefix = '',
                 tasks = [];
+            let i = 0,
+                n = raw.length,
+                opPrefixBeg = 0;
             for (;;) {
-                var i = 0,
-                    n = raw.length,
-                    c, match;
+                let c, match;
                 // Advance to next operator.
                 while ( i < n ) {
                     c = raw.charCodeAt(i++);
@@ -305,13 +386,14 @@
                     }
                 }
                 if ( i === n ) { break; }
-                var opNameBeg = i - 1;
-                var opNameEnd = i + match[0].length - 1;
+                const opNameBeg = i - 1;
+                const opNameEnd = i + match[0].length - 1;
                 i += match[0].length;
                 // Find end of argument: first balanced closing parenthesis.
                 // Note: unbalanced parenthesis can be used in a regex literal
                 // when they are escaped using `\`.
-                var pcnt = 1;
+                // TODO: need to handle quoted parentheses.
+                let pcnt = 1;
                 while ( i < n ) {
                     c = raw.charCodeAt(i++);
                     if ( c === 0x5C /* '\\' */ ) {
@@ -323,45 +405,73 @@
                         if ( pcnt === 0 ) { break; }
                     }
                 }
-                // Unbalanced parenthesis?
-                if ( pcnt !== 0 ) { return; }
+                // Unbalanced parenthesis? An unbalanced parenthesis is fine
+                // as long as the last character is a closing parenthesis.
+                if ( pcnt !== 0 && c !== 0x29 ) { return; }
+                // https://github.com/uBlockOrigin/uBlock-issues/issues/341#issuecomment-447603588
+                //   Maybe that one operator is a valid CSS selector and if so,
+                //   then consider it to be part of the prefix. If there is
+                //   at least one task present, then we fail, as we do not
+                //   support suffix CSS selectors.
+                if ( isValidCSSSelector(raw.slice(opNameBeg, i)) ) { continue; }
                 // Extract and remember operator details.
-                var operator = raw.slice(opNameBeg, opNameEnd);
+                let operator = raw.slice(opNameBeg, opNameEnd);
                 operator = normalizedOperators.get(operator) || operator;
-                var args = raw.slice(opNameEnd + 1, i - 1);
+                let args = raw.slice(opNameEnd + 1, i - 1);
                 args = compileArgument.get(operator)(args);
                 if ( args === undefined ) { return; }
-                if ( tasks.length === 0 ) {
+                if ( opPrefixBeg === 0 ) {
                     prefix = raw.slice(0, opNameBeg);
-                } else if ( opNameBeg !== 0 ) {
-                    return;
+                } else if ( opNameBeg !== opPrefixBeg ) {
+                    const spath = compileSpathExpression(
+                        raw.slice(opPrefixBeg, opNameBeg)
+                    );
+                    if ( spath === undefined ) { return; }
+                    tasks.push([ ':spath', spath ]);
                 }
                 tasks.push([ operator, args ]);
-                raw = raw.slice(i);
+                opPrefixBeg = i;
                 if ( i === n ) { break; }
             }
             // No task found: then we have a CSS selector.
             // At least one task found: nothing should be left to parse.
             if ( tasks.length === 0 ) {
                 prefix = raw;
-                tasks = undefined;
-            } else if ( raw.length !== 0 ) {
-                return;
+            } else if ( opPrefixBeg < n ) {
+                const spath = compileSpathExpression(raw.slice(opPrefixBeg));
+                if ( spath === undefined ) { return; }
+                tasks.push([ ':spath', spath ]);
             }
             // https://github.com/NanoAdblocker/NanoCore/issues/1#issuecomment-354394894
+            // https://www.reddit.com/r/uBlockOrigin/comments/c6iem5/
+            //   Convert sibling-selector prefix into :spath operator, but
+            //   only if context is not the root.
             if ( prefix !== '' ) {
                 if ( reIsDanglingSelector.test(prefix) ) { prefix += '*'; }
-                if ( isValidCSSSelector(prefix) === false ) { return; }
+                if ( isValidCSSSelector(prefix) === false ) {
+                    if (
+                        root ||
+                        reIsSiblingSelector.test(prefix) === false ||
+                        compileSpathExpression(prefix) === undefined
+                    ) {
+                        return;
+                    }
+                    tasks.unshift([ ':spath', prefix ]);
+                    prefix = '';
+                }
+            }
+            if ( tasks.length === 0 ) {
+                tasks = undefined;
             }
             return { selector: prefix, tasks: tasks };
         };
 
-        var entryPoint = function(raw) {
+        const entryPoint = function(raw) {
             if ( raw === lastProceduralSelector ) {
                 return lastProceduralSelectorCompiled;
             }
             lastProceduralSelector = raw;
-            var compiled = compile(raw);
+            let compiled = compile(raw, true);
             if ( compiled !== undefined ) {
                 compiled.raw = decompile(compiled);
                 compiled = JSON.stringify(compiled);
@@ -371,7 +481,7 @@
         };
 
         entryPoint.reset = function() {
-            regexToRawValue = new Map();
+            regexToRawValue.clear();
             lastProceduralSelector = '';
             lastProceduralSelectorCompiled = undefined;
         };
@@ -383,82 +493,127 @@
     // Public API
     //--------------------------------------------------------------------------
 
-    var api = {};
+    const api = {
+        get acceptedCount() {
+            return µb.cosmeticFilteringEngine.acceptedCount +
+                   µb.scriptletFilteringEngine.acceptedCount +
+                   µb.htmlFilteringEngine.acceptedCount;
+        },
+        get discardedCount() {
+            return µb.cosmeticFilteringEngine.discardedCount +
+                   µb.scriptletFilteringEngine.discardedCount +
+                   µb.htmlFilteringEngine.discardedCount;
+        },
+    };
 
     //--------------------------------------------------------------------------
     // Public classes
     //--------------------------------------------------------------------------
 
-    api.HostnameBasedDB = function(selfie) {
-        if ( selfie !== undefined ) {
-            this.db = new Map(selfie.map);
-            this.size = selfie.size;
-        } else {
-            this.db = new Map();
-            this.size = 0;
-        }
-    };
+    api.HostnameBasedDB = class {
 
-    api.HostnameBasedDB.prototype = {
-        add: function(hash, entry) {
-            var bucket = this.db.get(hash);
-            if ( bucket === undefined ) {
-                this.db.set(hash, entry);
-            } else if ( Array.isArray(bucket) ) {
-                bucket.push(entry);
-            } else {
-                this.db.set(hash, [ bucket, entry ]);
-            }
-            this.size += 1;
-        },
-        clear: function() {
-            this.db.clear();
+        constructor(nBits, selfie = undefined) {
+            this.nBits = nBits;
+            this.timer = undefined;
+            this.strToIdMap = new Map();
+            this.hostnameToSlotIdMap = new Map();
+            this.hostnameSlots = [];
+            this.strSlots = [];
             this.size = 0;
-        },
-        retrieve: function(hash, hostname, out) {
-            var bucket = this.db.get(hash);
-            if ( bucket === undefined ) { return; }
-            if ( Array.isArray(bucket) === false ) {
-                if ( hostname.endsWith(bucket.hostname) ) { out.push(bucket); }
+            if ( selfie !== undefined ) {
+                this.fromSelfie(selfie);
+            }
+        }
+
+        store(hn, bits, s) {
+            this.size += 1;
+            let iStr = this.strToIdMap.get(s);
+            if ( iStr === undefined ) {
+                iStr = this.strSlots.length;
+                this.strSlots.push(s);
+                this.strToIdMap.set(s, iStr);
+                if ( this.timer === undefined ) {
+                    this.collectGarbage(true);
+                }
+            }
+            const strId = iStr << this.nBits | bits;
+            const iHn = this.hostnameToSlotIdMap.get(hn);
+            if ( iHn === undefined ) {
+                this.hostnameToSlotIdMap.set(hn, this.hostnameSlots.length);
+                this.hostnameSlots.push(strId);
                 return;
             }
-            var i = bucket.length;
-            while ( i-- ) {
-                var entry = bucket[i];
-                if ( hostname.endsWith(entry.hostname) ) { out.push(entry); }
+            const bucket = this.hostnameSlots[iHn];
+            if ( Array.isArray(bucket) ) {
+                bucket.push(strId);
+            } else {
+                this.hostnameSlots[iHn] = [ bucket, strId ];
             }
-        },
-        toSelfie: function() {
+        }
+
+        clear() {
+            this.hostnameToSlotIdMap.clear();
+            this.hostnameSlots.length = 0;
+            this.strSlots.length = 0;
+            this.strToIdMap.clear();
+            this.size = 0;
+        }
+
+        collectGarbage(async = false) {
+            if ( async === false ) {
+                if ( this.timer !== undefined ) {
+                    self.cancelIdleCallback(this.timer);
+                    this.timer = undefined;
+                }
+                this.strToIdMap.clear();
+                return;
+            }
+            if ( this.timer !== undefined ) { return; }
+            this.timer = self.requestIdleCallback(
+                ( ) => {
+                    this.timer = undefined;
+                    this.strToIdMap.clear();
+                },
+                { timeout: 10000 }
+            );
+        }
+
+        retrieve(hostname, out) {
+            const mask = out.length - 1; // out.length must be power of two
+            for (;;) {
+                const filterId = this.hostnameToSlotIdMap.get(hostname);
+                if ( filterId !== undefined ) {
+                    const bucket = this.hostnameSlots[filterId];
+                    if ( Array.isArray(bucket) ) {
+                        for ( const id of bucket ) {
+                            out[id & mask].add(this.strSlots[id >>> this.nBits]);
+                        }
+                    } else {
+                        out[bucket & mask].add(this.strSlots[bucket >>> this.nBits]);
+                    }
+                }
+                if ( hostname === '' ) { break; }
+                const pos = hostname.indexOf('.');
+                hostname = pos !== -1 ? hostname.slice(pos + 1) : '';
+            }
+        }
+
+        toSelfie() {
             return {
-                map: Array.from(this.db),
+                hostnameToSlotIdMap: Array.from(this.hostnameToSlotIdMap),
+                hostnameSlots: this.hostnameSlots,
+                strSlots: this.strSlots,
                 size: this.size
             };
         }
-    };
 
-    api.HostnameBasedDB.prototype[Symbol.iterator] = (function() {
-        var Iter = function(db) {
-            this.mapIter = db.values();
-            this.arrayIter = undefined;
-        };
-        Iter.prototype.next = function() {
-            var result;
-            if ( this.arrayIter !== undefined ) {
-                result = this.arrayIter.next();
-                if ( result.done === false ) { return result; }
-                this.arrayIter = undefined;
-            }
-            result = this.mapIter.next();
-            if ( result.done || Array.isArray(result.value) === false ) {
-                return result;
-            }
-            this.arrayIter = result.value[Symbol.iterator]();
-            return this.arrayIter.next(); // array should never be empty
-        };
-        return function() {
-            return new Iter(this.db);
-        };
-    })();
+        fromSelfie(selfie) {
+            this.hostnameToSlotIdMap = new Map(selfie.hostnameToSlotIdMap);
+            this.hostnameSlots = selfie.hostnameSlots;
+            this.strSlots = selfie.strSlots;
+            this.size = selfie.size;
+        }
+    };
 
     //--------------------------------------------------------------------------
     // Public methods
@@ -481,41 +636,47 @@
     };
 
     // https://github.com/chrisaljoudi/uBlock/issues/1004
-    // Detect and report invalid CSS selectors.
+    //   Detect and report invalid CSS selectors.
 
     // Discard new ABP's `-abp-properties` directive until it is
     // implemented (if ever). Unlikely, see:
     // https://github.com/gorhill/uBlock/issues/1752
 
     // https://github.com/gorhill/uBlock/issues/2624
-    // Convert Adguard's `-ext-has='...'` into uBO's `:has(...)`.
+    //   Convert Adguard's `-ext-has='...'` into uBO's `:has(...)`.
+
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/89
+    //   Do not discard unknown pseudo-elements.
 
     api.compileSelector = (function() {
-        var reAfterBeforeSelector = /^(.+?)(::?after|::?before)$/,
-            reStyleSelector = /^(.+?):style\((.+?)\)$/,
-            reStyleBad = /url\([^)]+\)/,
-            reExtendedSyntax = /\[-(?:abp|ext)-[a-z-]+=(['"])(?:.+?)(?:\1)\]/,
-            reExtendedSyntaxParser = /\[-(?:abp|ext)-([a-z-]+)=(['"])(.+?)\2\]/,
-            div = document.createElement('div');
+        const reAfterBeforeSelector = /^(.+?)(::?after|::?before|::[a-z-]+)$/;
+        const reStyleSelector = /^(.+?):style\((.+?)\)$/;
+        const reExtendedSyntax = /\[-(?:abp|ext)-[a-z-]+=(['"])(?:.+?)(?:\1)\]/;
+        const reExtendedSyntaxParser = /\[-(?:abp|ext)-([a-z-]+)=(['"])(.+?)\2\]/;
+        const div = document.createElement('div');
 
-        var normalizedExtendedSyntaxOperators = new Map([
+        const normalizedExtendedSyntaxOperators = new Map([
             [ 'contains', ':has-text' ],
-            [ 'has', ':if' ],
+            [ 'has', ':has' ],
             [ 'matches-css', ':matches-css' ],
             [ 'matches-css-after', ':matches-css-after' ],
             [ 'matches-css-before', ':matches-css-before' ],
         ]);
 
-        var isValidStyleProperty = function(cssText) {
+        const isValidStyleProperty = function(cssText) {
             if ( reStyleBad.test(cssText) ) { return false; }
             div.style.cssText = cssText;
             if ( div.style.cssText === '' ) { return false; }
             div.style.cssText = '';
             return true;
         };
+        // https://github.com/uBlockOrigin/uBlock-issues/issues/668
+        const reStyleBad = /url\(|\\/i;
 
-        var entryPoint = function(raw) {
-            var extendedSyntax = reExtendedSyntax.test(raw);
+        const entryPoint = function(raw) {
+            entryPoint.pseudoclass = false;
+
+            const extendedSyntax = reExtendedSyntax.test(raw);
             if ( isValidCSSSelector(raw) && extendedSyntax === false ) {
                 return raw;
             }
@@ -523,18 +684,18 @@
             // We  rarely reach this point -- majority of selectors are plain
             // CSS selectors.
 
-            var matches, operator;
+            let matches;
 
-            // Supported Adguard/ABP advanced selector syntax: will translate into
-            // uBO's syntax before further processing.
+            // Supported Adguard/ABP advanced selector syntax: will translate
+            // into uBO's syntax before further processing.
             // Mind unsupported advanced selector syntax, such as ABP's
             // `-abp-properties`.
-            // Note: extended selector syntax has been deprecated in ABP, in favor
-            // of the procedural one (i.e. `:operator(...)`). See
-            // https://issues.adblockplus.org/ticket/5287
+            // Note: extended selector syntax has been deprecated in ABP, in
+            // favor of the procedural one (i.e. `:operator(...)`).
+            // See https://issues.adblockplus.org/ticket/5287
             if ( extendedSyntax ) {
                 while ( (matches = reExtendedSyntaxParser.exec(raw)) !== null ) {
-                    operator = normalizedExtendedSyntaxOperators.get(matches[1]);
+                    const operator = normalizedExtendedSyntaxOperators.get(matches[1]);
                     if ( operator === undefined ) { return; }
                     raw = raw.slice(0, matches.index) +
                           operator + '(' + matches[3] + ')' +
@@ -543,8 +704,7 @@
                 return entryPoint(raw);
             }
 
-            var selector = raw,
-                pseudoclass, style;
+            let selector = raw, pseudoclass, style;
 
             // `:style` selector?
             if ( (matches = reStyleSelector.exec(selector)) !== null ) {
@@ -560,58 +720,58 @@
             }
 
             if ( style !== undefined || pseudoclass !== undefined ) {
-                if ( isValidCSSSelector(selector) === false ) {
-                    return;
-                }
+                if ( isValidCSSSelector(selector) === false ) { return; }
                 if ( pseudoclass !== undefined ) {
                     selector += pseudoclass;
                 }
                 if ( style !== undefined ) {
                     if ( isValidStyleProperty(style) === false ) { return; }
-                    return JSON.stringify({
-                        raw: raw,
-                        style: [ selector, style ]
-                    });
+                    return JSON.stringify({ raw, style: [ selector, style ] });
                 }
-                return JSON.stringify({
-                    raw: raw,
-                    pseudoclass: true
-                });
+                entryPoint.pseudoclass = true;
+                return JSON.stringify({ raw, pseudoclass: true });
             }
 
             // Procedural selector?
-            var compiled;
-            if ( (compiled = compileProceduralSelector(raw)) ) {
+            const compiled = compileProceduralSelector(raw);
+            if ( compiled !== undefined ) {
                 return compiled;
             }
-
-            µb.logger.writeOne(
-                '',
-                'error',
-                'Cosmetic filtering – invalid filter: ' + raw
-            );
         };
+
+        entryPoint.pseudoclass = false;
 
         return entryPoint;
     })();
 
     api.compile = function(raw, writer) {
-        var lpos = raw.indexOf('#');
+        let lpos = raw.indexOf('#');
         if ( lpos === -1 ) { return false; }
-        var rpos = lpos + 1;
+        let rpos = lpos + 1;
         if ( raw.charCodeAt(rpos) !== 0x23 /* '#' */ ) {
             rpos = raw.indexOf('#', rpos + 1);
             if ( rpos === -1 ) { return false; }
         }
 
+        // https://github.com/AdguardTeam/AdguardFilters/commit/4fe02d73cee6
+        //   AdGuard also uses `$?` to force inline-based style rather than
+        //   stylesheet-based style.
         // Coarse-check that the anchor is valid.
-        // `##`: l = 1
-        // `#@#`, `#$#`, `#%#`, `#?#`: l = 2
-        // `#@$#`, `#@%#`, `#@?#`: l = 3
-        if ( (rpos - lpos) > 3 ) { return false; }
+        // `##`: l === 1
+        // `#@#`, `#$#`, `#%#`, `#?#`: l === 2
+        // `#@$#`, `#@%#`, `#@?#`, `#$?#`: l === 3
+        // `#@$?#`: l === 4
+        const anchorLen = rpos - lpos;
+        if ( anchorLen > 4 ) { return false; }
+        if (
+            anchorLen > 1 &&
+            /^@?(?:\$\??|%|\?)?$/.test(raw.slice(lpos + 1, rpos)) === false
+        ) {
+            return false;
+        }
 
         // Extract the selector.
-        var suffix = raw.slice(rpos + 1).trim();
+        let suffix = raw.slice(rpos + 1).trim();
         if ( suffix.length === 0 ) { return false; }
         parsed.suffix = suffix;
 
@@ -622,13 +782,12 @@
         //   We have an Adguard/ABP cosmetic filter if and only if the
         //   character is `$`, `%` or `?`, otherwise it's not a cosmetic
         //   filter.
-        var cCode = raw.charCodeAt(rpos - 1);
+        let cCode = raw.charCodeAt(rpos - 1);
         if ( cCode !== 0x23 /* '#' */ && cCode !== 0x40 /* '@' */ ) {
             // Adguard's scriptlet injection: not supported.
             if ( cCode === 0x25 /* '%' */ ) { return true; }
-            // Not a known extended filter.
-            if ( cCode !== 0x24 /* '$' */ && cCode !== 0x3F /* '?' */ ) {
-                return false;
+            if ( cCode === 0x3F /* '?' */ && anchorLen > 2 ) {
+                cCode = raw.charCodeAt(rpos - 2);
             }
             // Adguard's style injection: translate to uBO's format.
             if ( cCode === 0x24 /* '$' */ ) {
@@ -645,37 +804,22 @@
         if ( lpos === 0 ) {
             parsed.hostnames = emptyArray;
         } else {
-            var prefix = raw.slice(0, lpos);
-            parsed.hostnames = prefix.split(reHostnameSeparator);
-            if ( reHasUnicode.test(prefix) ) {
-                toASCIIHostnames(parsed.hostnames);
-            }
+            parsed.hostnames = hostnamesFromPrefix(raw.slice(0, lpos));
         }
 
+        // Backward compatibility with deprecated syntax.
         if ( suffix.startsWith('script:') ) {
-            // Scriptlet injection engine.
             if ( suffix.startsWith('script:inject') ) {
-                µb.scriptletFilteringEngine.compile(parsed, writer);
-                return true;
-            }
-            // Script tag filtering: courtesy-conversion to HTML filtering.
-            if ( suffix.startsWith('script:contains') ) {
-                console.info(
-                    'uBO: ##script:contains(...) is deprecated, ' +
-                    'converting to ##^script:has-text(...)'
-                );
-                suffix = suffix.replace(/^script:contains/, '^script:has-text');
-                parsed.suffix = suffix;
+                suffix = parsed.suffix = '+js' + suffix.slice(13);
+            } else if ( suffix.startsWith('script:contains') ) {
+                suffix = parsed.suffix = '^script:has-text' + suffix.slice(15);
             }
         }
 
-        var c0 = suffix.charCodeAt(0);
+        let c0 = suffix.charCodeAt(0);
 
         // New shorter syntax for scriptlet injection engine.
         if ( c0 === 0x2B /* '+' */ && suffix.startsWith('+js') ) {
-            // Convert to deprecated syntax for now. Once 1.15.12 is
-            // widespread, `+js` form will be the official syntax.
-            parsed.suffix = 'script:inject' + parsed.suffix.slice(3);
             µb.scriptletFilteringEngine.compile(parsed, writer);
             return true;
         }
@@ -699,35 +843,30 @@
         µb.htmlFilteringEngine.fromCompiledContent(reader, options);
     };
 
-    api.toSelfie = function() {
-        return {
-            cosmetic: µb.cosmeticFilteringEngine.toSelfie(),
-            scriptlets: µb.scriptletFilteringEngine.toSelfie(),
-            html: µb.htmlFilteringEngine.toSelfie()
-        };
+    api.toSelfie = function(path) {
+        return µBlock.assets.put(
+            `${path}/main`,
+            JSON.stringify({
+                cosmetic: µb.cosmeticFilteringEngine.toSelfie(),
+                scriptlets: µb.scriptletFilteringEngine.toSelfie(),
+                html: µb.htmlFilteringEngine.toSelfie()
+            })
+        );
     };
 
-    Object.defineProperties(api, {
-        acceptedCount: {
-            get: function() {
-                return µb.cosmeticFilteringEngine.acceptedCount +
-                       µb.scriptletFilteringEngine.acceptedCount +
-                       µb.htmlFilteringEngine.acceptedCount;
+    api.fromSelfie = function(path) {
+        return µBlock.assets.get(`${path}/main`).then(details => {
+            let selfie;
+            try {
+                selfie = JSON.parse(details.content);
+            } catch (ex) {
             }
-        },
-        discardedCount: {
-            get: function() {
-                return µb.cosmeticFilteringEngine.discardedCount +
-                       µb.scriptletFilteringEngine.discardedCount +
-                       µb.htmlFilteringEngine.discardedCount;
-            }
-        }
-    });
-
-    api.fromSelfie = function(selfie) {
-        µb.cosmeticFilteringEngine.fromSelfie(selfie.cosmetic);
-        µb.scriptletFilteringEngine.fromSelfie(selfie.scriptlets);
-        µb.htmlFilteringEngine.fromSelfie(selfie.html);
+            if ( selfie instanceof Object === false ) { return false; }
+            µb.cosmeticFilteringEngine.fromSelfie(selfie.cosmetic);
+            µb.scriptletFilteringEngine.fromSelfie(selfie.scriptlets);
+            µb.htmlFilteringEngine.fromSelfie(selfie.html);
+            return true;
+        });
     };
 
     return api;
